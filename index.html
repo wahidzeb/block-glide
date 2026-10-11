@@ -291,6 +291,15 @@ body:not(.ads-on) .adslot{display:none!important}
 <div id="toast" class="hide"></div>
 <div id="modals"></div>
 <script>
+/* GA4 custom events (Games by Zaib). Safe: never throws, light (no per-frame calls, dedupe + per-page cap). */
+var ZT_N = 0, ZT_K = '', ZT_KT = 0, ZT_T = 0, ZT_S = 0, ZT_H = 0;
+function zt(n, p) { try { var k = n + JSON.stringify(p || 0), t = Date.now(); if (ZT_N > 150 || (k === ZT_K && t - ZT_KT < 500)) return; ZT_N++; ZT_K = k; ZT_KT = t; window.gtag && gtag('event', n, Object.assign({ game_id: 'block-glide' }, p)); } catch (e) {} }
+function ztPlay(on) { try { var t = Date.now(); if (ZT_S) { ZT_T += (t - ZT_S) / 1e3; ZT_S = 0; } if (on) ZT_S = t; } catch (e) {} }
+function ztPing(r) { try { ztPlay(false); if (ZT_T >= 1) zt('play_time', { play_time: Math.round(ZT_T), reason: r }); ZT_T = 0; } catch (e) {} }
+try {
+  document.addEventListener('visibilitychange', function () { if (document.hidden) { ZT_H = !!ZT_S; ztPing('page_hide'); } else if (ZT_H) { ZT_H = 0; ztPlay(true); } });
+  document.addEventListener('click', function (e) { try { var a = e.target && e.target.closest && e.target.closest('a[href]'); if (!a) return; var u = new URL(a.href, location.href); if (!/^https?:$/.test(u.protocol)) return; if (u.host === location.host || /(^|\.)zaibgames\.com$/.test(u.host)) { if (u.pathname.indexOf('/block-glide/') !== 0) zt('more_games_click', { link_url: u.href }); } else zt('outbound_click', { link_url: u.href, link_domain: u.host, outbound: true }); } catch (err) {} }, true);
+} catch (e) {}
 // ================= core: shapes, rules, solver (shared by game + generator) =================
 const PALETTE = [
   { n: 'Cherry', b: '#ff4d6d', sym: '♥' },
@@ -1045,6 +1054,7 @@ function startLevel(id) {
   boardDirty = true; FX.parts = []; FX.texts = [];
   showHUD(); layout(); updHUD(); showTip();
   if (typeof onLevelStart === 'function') onLevelStart();
+  { const zm = id === 'daily' ? 'daily' : 'levels'; zt('game_start', { mode: zm, level: String(id) }); if (id === 1 && !SAVE.tut.l1) zt('tutorial_begin', {}); ztPlay(true); }
 }
 function movesLeft() { return GM.L.mv ? GM.L.mv + GM.extraMoves - GM.S.m : Infinity; }
 function timeLeft() { return GM.L.tm ? GM.L.tm + GM.extraTime - GM.elapsed : Infinity; }
@@ -1448,7 +1458,7 @@ function doMove(mv, path) {
   if (GM.hist.length > 60) GM.hist.shift();
   if (!GM.started) { GM.started = true; }
   const prevKeys = keysLeft(L, GM.S), prevEx = GM.S.ex;
-  const r = applyMove(L, GM.S, mv); GM.S = r.S; GM.hand = null; GM.idle = 0; if (GM.id === 1) { SAVE.tut.l1 = 1; }
+  const r = applyMove(L, GM.S, mv); GM.S = r.S; GM.hand = null; GM.idle = 0; if (GM.id === 1) { if (!SAVE.tut.l1) zt('tutorial_complete', {}); SAVE.tut.l1 = 1; }
   // star pickups along path
   const B = L.blocks[mv.i], pts = path || [[mv.x, mv.y]];
   for (const p of pts) { const cells = cellsOf(B.k, mv.r); for (const c of cells) { const k = (p[1] + c[1]) * L.w + p[0] + c[0]; if (L.stars.includes(k) && !GM.stars.has(k)) pickStar(k); } }
@@ -1510,7 +1520,8 @@ function afterMove() {
   if (L.mv && movesLeft() <= 0) endLevel('moves');
 }
 function endLevel(kind) {
-  if (GM.endKind) return; GM.endKind = kind; GM.status = 'end'; if (GM.drag) cancelDrag(); GM.sel = null; updBoostSel(); GM.hand = null;
+  if (GM.endKind) return; GM.endKind = kind; GM.status = 'end';
+  if (kind !== 'win') try { const zm = GM.id === 'daily' ? 'daily' : 'levels'; zt('level_end', { level: String(GM.id), mode: zm, success: false, reason: kind }); zt('game_over', { score: GM.L.blocks.length - aliveCount(GM.S), level: String(GM.id), mode: zm, reason: kind }); ztPing('game_over'); } catch (e) { } if (GM.drag) cancelDrag(); GM.sel = null; updBoostSel(); GM.hand = null;
   if (kind === 'win') { recordWin(); GM.endT = 1.7; GM.winT = 0; hideTip(); setTimeout(() => { confetti(140); sfx('win'); vibe([30, 40, 30, 40, 60]); const cx = B_BOARD.bx + GM.L.w * B_BOARD.cs / 2, cy = B_BOARD.by + GM.L.h * B_BOARD.cs / 2; floatText(cx, cy, GM.id === 'daily' ? 'Daily Clear!' : 'Board Clear!', '#ffffff', 50, { stroke: '#ff4f92', life: 1.4, rise: 20 }); burst(cx, cy, PALETTE.map(p => p.b), 60, { kind: 'star', smin: 150, smax: 520, g: 250 }); }, 420); }
   else if (kind === 'bomb') {
     const L = GM.L, S = GM.S; for (let i = 0; i < L.blocks.length; i++) if (S.al[i] && L.blocks[i].bomb) { const v = GM.vis[i], [cx, cy] = blockCenter(i, v.x, v.y); burst(cx, cy, ['#ff7a2f', '#ffd84a', '#3a3550', '#ffffff'], 60, { smin: 150, smax: 600 }); ring(cx, cy, '#ff7a2f', B_BOARD.cs * 3); v.alpha = 0; }
@@ -1722,7 +1733,7 @@ function onLevelStart() {
   for (const k of ['time', 'moves', 'arrow', 'ice', 'layer', 'lock', 'star', 'rot', 'cyc', 'bomb']) if (has[k] && !SAVE.seen[k]) q.push(k);
   if (q.length) { GM.status = 'intro'; showIntro(q); }
   if (GM.id === 1 && !SAVE.tut.l1) { GM.idle = 5; }
-  if (typeof gtag === 'function') try { gtag('event', 'level_start', { level: String(GM.id) }); } catch (e) { }
+  zt('level_start', { level: String(GM.id), mode: GM.id === 'daily' ? 'daily' : 'levels', attempt: GM.att });
 }
 const INTRO = {
   time: ['Beat the Clock', 'The timer starts on your first move. Clear every block before it runs out!'],
@@ -1791,14 +1802,14 @@ function updLimit() {
 function openBuyBooster(id) {
   const b = BOOSTERS.find(q => q.id === id); const wasPlay = GM.status === 'play'; if (wasPlay) GM.status = 'paused';
   const m = modal(`<button class="x" data-a="x"><span data-i="close"></span></button><div style="width:96px;height:96px;margin:6px auto 8px;border-radius:30px;background:linear-gradient(180deg,#fff,#f1edff);box-shadow:inset 0 -5px 0 #dcd4fb,0 8px 18px rgba(60,40,140,.18);display:flex;align-items:center;justify-content:center"><div style="width:64px;height:64px">${BICON[id]}</div></div><h2>${b.n}</h2><p class="sub" style="margin-bottom:16px">${b.d}</p><button class="btn gold" data-a="buy">Buy 1 ${coinHTML(b.price)}</button><div class="credit" style="margin-top:10px">You have ${SAVE.coins} coins</div>`,
-    { dismiss: () => { if (wasPlay) GM.status = 'play'; }, on: { x: () => { closeModals(); if (wasPlay) GM.status = 'play'; }, buy: () => { if (SAVE.coins < b.price) { sfx('deny'); toast('Not enough coins'); return; } SAVE.coins -= b.price; SAVE.boosters[id]++; saveGame(); sfx('coin'); updCoins(); renderBoosts(); closeModals(); if (wasPlay) { GM.status = 'play'; useBooster(id); } } } });
+    { dismiss: () => { if (wasPlay) GM.status = 'play'; }, on: { x: () => { closeModals(); if (wasPlay) GM.status = 'play'; }, buy: () => { if (SAVE.coins < b.price) { sfx('deny'); toast('Not enough coins'); return; } SAVE.coins -= b.price; SAVE.boosters[id]++; zt('spend_virtual_currency', { virtual_currency_name: 'coins', value: b.price, item_name: b.n || id, item_category: 'booster' }); saveGame(); sfx('coin'); updCoins(); renderBoosts(); closeModals(); if (wasPlay) { GM.status = 'play'; useBooster(id); } } } });
 }
 // ---------- pause ----------
 function pauseGame() {
   if (!GM.on || GM.status !== 'play') return; GM.status = 'paused'; if (GM.drag) cancelDrag();
   const S = SAVE.settings;
   modal(`<div class="ribbon blue">Paused</div><div class="row" style="justify-content:center;gap:12px;margin:6px 0 16px"><button class="ibtn" data-a="snd" style="${S.sound ? '' : 'opacity:.45'}"><span data-i="sound"></span></button><button class="ibtn" data-a="mus" style="${S.music ? '' : 'opacity:.45'}"><span data-i="music"></span></button><button class="ibtn" data-a="vib" style="${S.vibe ? '' : 'opacity:.45'}"><span data-i="vibe"></span></button><button class="ibtn" data-a="how"><span data-i="help"></span></button></div><div class="btns"><button class="btn big" data-a="res"><span data-i="play"></span>Resume</button><div class="row"><button class="btn blue sm" data-a="rst"><span data-i="retry"></span>Restart</button><button class="btn soft sm" data-a="map"><span data-i="map"></span>Map</button></div></div><div class="credit" style="margin-top:12px">Game by Zaib</div>`,
-    { dismiss: () => { GM.status = 'play'; }, on: { res: () => { closeModals(); GM.status = 'play'; }, rst: () => { closeModals(); startLevel(GM.id); }, map: () => { closeModals(); GM.id === 'daily' ? showTitle() : showMap(); }, how: () => showHow(() => { GM.status = 'play'; pauseGame(); }), snd: (b) => { S.sound = !S.sound; b.style.opacity = S.sound ? 1 : .45; saveGame(); auApply(); }, mus: (b) => { S.music = !S.music; b.style.opacity = S.music ? 1 : .45; saveGame(); auApply(); }, vib: (b) => { S.vibe = !S.vibe; b.style.opacity = S.vibe ? 1 : .45; saveGame(); vibe(20); } } });
+    { dismiss: () => { GM.status = 'play'; }, on: { res: () => { closeModals(); GM.status = 'play'; }, rst: () => { closeModals(); startLevel(GM.id); }, map: () => { closeModals(); GM.id === 'daily' ? showTitle() : showMap(); }, how: () => showHow(() => { GM.status = 'play'; pauseGame(); }), snd: (b) => { S.sound = !S.sound; zt('settings_change', { setting: 'sound', value: String(S.sound) }); b.style.opacity = S.sound ? 1 : .45; saveGame(); auApply(); }, mus: (b) => { S.music = !S.music; zt('settings_change', { setting: 'music', value: String(S.music) }); b.style.opacity = S.music ? 1 : .45; saveGame(); auApply(); }, vib: (b) => { S.vibe = !S.vibe; zt('settings_change', { setting: 'vibe', value: String(S.vibe) }); b.style.opacity = S.vibe ? 1 : .45; saveGame(); vibe(20); } } });
 }
 // ---------- win / lose ----------
 function calcStars() {
@@ -1820,10 +1831,12 @@ function recordWin() {
   } else {
     const n = GM.id, prev = SAVE.stars[n] || 0, first = n >= SAVE.lvl;
     coins = first ? 20 + stars * 5 + (n % 10 === 0 ? 25 : 0) + Math.floor(n / 10) : 5 + Math.max(0, stars - prev) * 10;
+    if (stars > prev) zt('post_score', { score: stars, level: String(n), mode: 'levels' });
     SAVE.stars[n] = Math.max(prev, stars); if (first) SAVE.lvl = n + 1; SAVE.stats.wins++; if (stars === 3) SAVE.stats.perfect++;
   }
   SAVE.coins += coins; saveGame();
-  if (typeof gtag === 'function') try { gtag('event', 'level_complete', { level: String(GM.id), stars }); } catch (e) { }
+  zt('level_complete', { level: String(GM.id), stars });
+  zt('level_end', { level: String(GM.id), mode: daily ? 'daily' : 'levels', success: true, stars: stars }); zt('earn_virtual_currency', { virtual_currency_name: 'coins', value: coins, item_name: daily ? 'daily_win' : 'level_win' }); ztPing('level_clear');
   return (GM.winRes = { att: GM.att, stars, coins });
 }
 function showWin() {
@@ -1844,7 +1857,7 @@ function showLose(kind) {
   const ic = kind === 'time' ? ICONS.clock : kind === 'moves' ? ICONS.moves : ICONS.flame;
   const left = aliveCount(GM.S);
   modal(`<div class="ribbon grey">${ttl}</div><div style="width:92px;height:92px;margin:4px auto 10px;border-radius:50%;background:${kind === 'bomb' ? 'linear-gradient(180deg,#ff9a6b,#ff4d3d)' : 'linear-gradient(180deg,#a99fd6,#7f73bd)'};color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 -6px 0 rgba(0,0,0,.15)"><div style="width:50px;height:50px">${ic}</div></div><p class="sub" style="margin-bottom:14px">So close! Only <b>${left}</b> block${left > 1 ? 's' : ''} left.</p><div class="btns"><button class="btn gold big" data-a="cont">${off} ${coinHTML(price)}</button><div class="row"><button class="btn blue sm" data-a="rst"><span data-i="retry"></span>Retry</button><button class="btn soft sm" data-a="map"><span data-i="map"></span>${GM.id === 'daily' ? 'Home' : 'Map'}</button></div></div><div class="credit" style="margin-top:12px">Game by Zaib</div>`,
-    { on: { cont: () => { if (SAVE.coins < price) { sfx('deny'); toast('Not enough coins'); return; } SAVE.coins -= price; saveGame(); updCoins(); closeModals(); sfx('coin'); continueLevel(kind); }, rst: () => { closeModals(); startLevel(GM.id); }, map: () => { GM.id === 'daily' ? showTitle() : showMap(); } } });
+    { on: { cont: () => { if (SAVE.coins < price) { sfx('deny'); toast('Not enough coins'); return; } SAVE.coins -= price; zt('spend_virtual_currency', { virtual_currency_name: 'coins', value: price, item_name: 'continue' }); ztPlay(true); saveGame(); updCoins(); closeModals(); sfx('coin'); continueLevel(kind); }, rst: () => { closeModals(); startLevel(GM.id); }, map: () => { GM.id === 'daily' ? showTitle() : showMap(); } } });
 }
 // ---------- daily ----------
 function playDaily() {
@@ -1868,7 +1881,7 @@ function renderShop(m) {
   m.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === shopTab));
   const body = m.querySelector('#shopBody'); body.innerHTML = ''; body.className = shopTab === 'boost' ? 'list' : 'grid';
   if (shopTab === 'boost') {
-    for (const b of BOOSTERS) { const it = document.createElement('div'); it.className = 'it'; it.innerHTML = `<div style="width:50px;height:50px;flex:none">${BICON[b.id]}</div><div class="tx"><b>${b.n} <span style="color:var(--ink2);font-size:14px">×${SAVE.boosters[b.id]}</span></b><small>${b.d}</small></div><button class="btn gold sm" style="width:auto">${coinHTML(b.price)}</button>`; it.querySelector('button').addEventListener('click', () => { if (SAVE.coins < b.price) { sfx('deny'); toast('Not enough coins'); return; } SAVE.coins -= b.price; SAVE.boosters[b.id]++; saveGame(); sfx('coin'); vibe(10); updCoins(); renderShop(m); }); body.appendChild(it); }
+    for (const b of BOOSTERS) { const it = document.createElement('div'); it.className = 'it'; it.innerHTML = `<div style="width:50px;height:50px;flex:none">${BICON[b.id]}</div><div class="tx"><b>${b.n} <span style="color:var(--ink2);font-size:14px">×${SAVE.boosters[b.id]}</span></b><small>${b.d}</small></div><button class="btn gold sm" style="width:auto">${coinHTML(b.price)}</button>`; it.querySelector('button').addEventListener('click', () => { if (SAVE.coins < b.price) { sfx('deny'); toast('Not enough coins'); return; } SAVE.coins -= b.price; SAVE.boosters[b.id]++; zt('spend_virtual_currency', { virtual_currency_name: 'coins', value: b.price, item_name: b.n, item_category: 'booster' }); saveGame(); sfx('coin'); vibe(10); updCoins(); renderShop(m); }); body.appendChild(it); }
     return;
   }
   const isSk = shopTab === 'skins', src = isSk ? SKINS : THEMES, owned = isSk ? SAVE.skins : SAVE.themes, cur = isSk ? SAVE.skin : SAVE.theme;
@@ -1877,7 +1890,7 @@ function renderShop(m) {
     el.innerHTML = `<canvas width="240" height="160"></canvas><b>${it.n}</b><span class="tagb">${eq ? 'Equipped' : own ? 'Use' : `<i class="ic-coin"></i>${it.price}`}</span>`;
     body.appendChild(el); drawPreview(el.querySelector('canvas'), isSk ? k : SAVE.skin, isSk ? SAVE.theme : k);
     el.addEventListener('click', () => {
-      if (eq) return; if (!own) { if (SAVE.coins < it.price) { sfx('deny'); toast('Not enough coins'); return; } SAVE.coins -= it.price; owned.push(k); sfx('coin'); toast(it.n + ' unlocked!'); }
+      if (eq) return; if (!own) { if (SAVE.coins < it.price) { sfx('deny'); toast('Not enough coins'); return; } SAVE.coins -= it.price; owned.push(k); zt('spend_virtual_currency', { virtual_currency_name: 'coins', value: it.price, item_name: it.n, item_category: shopTab }); sfx('coin'); toast(it.n + ' unlocked!'); }
       if (isSk) SAVE.skin = k; else { SAVE.theme = k; BG.dirty = true; boardDirty = true; }
       sfx('click'); vibe(10); saveGame(); updCoins(); renderShop(m);
     });
@@ -1934,7 +1947,7 @@ function drawHow(cn, st) {
 }
 function showAch() {
   const items = ACH.map(a => { const p = a.p(), done = p >= 1, got = SAVE.ach[a.id]; return `<div class="it"><div class="ic" style="background:${got ? '#bfb6e6' : done ? 'linear-gradient(180deg,#ffd84a,#ff9f1c)' : '#9a5cff'}"><span data-i="trophy"></span></div><div class="tx"><b>${a.n}</b><small>${a.d}</small>${done ? '' : `<div class="bar"><i style="width:${Math.round(p * 100)}%"></i></div>`}</div>${got ? `<span style="color:var(--pri2);width:28px;height:28px;display:inline-flex">${ICONS.check}</span>` : done ? `<button class="btn gold sm" style="width:auto" data-a="c_${a.id}">${coinHTML(a.r)}</button>` : `<span class="credit" style="display:flex;align-items:center;gap:3px"><i class="ic-coin" style="width:18px;height:18px"></i>${a.r}</span>`}</div>`; }).join('');
-  const on = { x: () => { closeModals(); showTitle(); } }; for (const a of ACH) on['c_' + a.id] = () => { SAVE.ach[a.id] = 1; SAVE.coins += a.r; saveGame(); sfx('coin'); vibe(15); updCoins(); toast('+' + a.r + ' coins!'); showAch(); };
+  const on = { x: () => { closeModals(); showTitle(); } }; for (const a of ACH) on['c_' + a.id] = () => { SAVE.ach[a.id] = 1; SAVE.coins += a.r; zt('unlock_achievement', { achievement_id: a.id }); zt('earn_virtual_currency', { virtual_currency_name: 'coins', value: a.r, item_name: 'achievement_' + a.id }); saveGame(); sfx('coin'); vibe(15); updCoins(); toast('+' + a.r + ' coins!'); showAch(); };
   const m = modal(`<button class="x" data-a="x"><span data-i="close"></span></button><h2>Awards</h2><p class="sub">Earn coins for milestones</p><div class="list">${items}</div>`, { dismiss: () => showTitle(), on });
   m.querySelector('.card').style.height = 'min(640px,100%)';
 }
@@ -1942,7 +1955,7 @@ function showGift() {
   const t = todayStr(), can = giftReady(); let day = SAVE.gift.day; if (dayDiff(SAVE.gift.last, t) > 1) day = 0; const today = can ? day % 7 : (day - 1 + 7) % 7;
   const cells = GIFTS.map((g, i) => `<div class="day${i === 6 ? ' d7' : ''}${(can ? i < today : i <= today) ? ' got' : ''}${can && i === today ? ' now' : ''}">Day ${i + 1}<b><i class="ic-coin"></i>${g}</b>${i === 6 ? '<span style="font-size:11px">+ Hammer</span>' : ''}</div>`).join('');
   modal(`<button class="x" data-a="x"><span data-i="close"></span></button><h2>Daily Gift</h2><p class="sub">Come back every day for bigger rewards</p><div class="days">${cells}</div><button class="btn gold" data-a="claim" ${can ? '' : 'disabled'}>${can ? 'Claim ' + coinHTML(GIFTS[today]) : 'Come back tomorrow'}</button>`,
-    { dismiss: () => showTitle(), on: { x: () => { closeModals(); showTitle(); }, claim: () => { if (!giftReady()) return; SAVE.coins += GIFTS[today]; if (today === 6) SAVE.boosters.hammer++; SAVE.gift.day = today + 1; SAVE.gift.last = t; saveGame(); sfx('win'); vibe([20, 30, 20]); confetti(60); updCoins(); toast('+' + GIFTS[today] + ' coins!'); showGift(); } } });
+    { dismiss: () => showTitle(), on: { x: () => { closeModals(); showTitle(); }, claim: () => { if (!giftReady()) return; SAVE.coins += GIFTS[today]; zt('earn_virtual_currency', { virtual_currency_name: 'coins', value: GIFTS[today], item_name: 'daily_gift' }); if (today === 6) SAVE.boosters.hammer++; SAVE.gift.day = today + 1; SAVE.gift.last = t; saveGame(); sfx('win'); vibe([20, 30, 20]); confetti(60); updCoins(); toast('+' + GIFTS[today] + ' coins!'); showGift(); } } });
 }
 // ---------- input binding ----------
 cv.addEventListener('pointerdown', e => { if (SCREEN === 'game') onDown(e); });
