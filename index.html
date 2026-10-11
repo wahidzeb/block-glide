@@ -389,7 +389,8 @@ function closure(L, S) {
   }
   return ev;
 }
-const ROT_OFF = [[0, 0], [-1, 0], [0, -1], [-1, -1], [1, 0], [0, 1], [1, 1], [-2, 0], [0, -2]];
+// rotation pivots near the anchor only (the rotated block must stay in place, never hop over neighbours)
+const ROT_OFF = [[0, 0], [-1, 0], [0, -1], [-1, -1], [1, 0], [0, 1], [1, 1]];
 function rotateTarget(L, S, occ, i) {
   const B = L.blocks[i]; if (!B.rot || !movable(L, S, i)) return null;
   const nr = (S.r[i] + 1) & 3, cs = cellsOf(B.k, nr);
@@ -1034,13 +1035,13 @@ function levelData(id) { return id === 'daily' ? GM.dailyData : LEVELS[id - 1]; 
 function chapterOf(n) { return CHAPTERS[Math.min(CHAPTERS.length - 1, Math.floor((n - 1) / LEVELS_PER_CH))]; }
 function startLevel(id) {
   const d = levelData(id); if (!d) return;
-  GM.id = id; GM.L = prepLevel(d); GM.S = initState(GM.L); GM.hist = []; GM.status = 'play'; GM.on = true; GM.t = 0;
+  GM.att = (GM.att || 0) + 1; GM.id = id; GM.L = prepLevel(d); GM.S = initState(GM.L); GM.hist = []; GM.status = 'play'; GM.on = true; GM.t = 0;
   GM.vis = GM.L.blocks.map((B, i) => ({ x: B.x0, y: B.y0, vx: 0, vy: 0, sc: 0, sv: 0, lift: 0, alpha: 1, exit: null, rotA: 0, shake: 0, flash: 0, peel: 0, blink: rnd(1, 4), born: i * .035 }));
   GM.drag = null; GM.sel = null; GM.combo = 0; GM.lastExit = -9; GM.bestCombo = 0;
   GM.extraMoves = 0; GM.extraTime = 0; GM.started = false; GM.elapsed = 0; GM.freeze = 0; GM.usedBoost = 0;
   GM.stars = new Set(); GM.starVis = (GM.L.stars || []).map(i => ({ i, t: rnd(0, 6), got: 0 }));
   GM.gateFlash = GM.L.gates.map(() => 0); GM.iceSeen = GM.L.blocks.map(B => B.ice); GM.endT = 0; GM.endKind = null; GM.idle = 0; GM.continues = 0;
-  GM.hand = null; GM.lastBomb = -1;
+  GM.hand = null; GM.lastBomb = -1; GM.gen = (GM.gen || 0) + 1; GM.starPaid = new Set();
   boardDirty = true; FX.parts = []; FX.texts = [];
   showHUD(); layout(); updHUD(); showTip();
   if (typeof onLevelStart === 'function') onLevelStart();
@@ -1253,47 +1254,84 @@ function renderGame(dt) {
   ctx.restore();
 }
 // ---------- update ----------
-function updateGame(dt) {
+function updateGame(dt, realDt) {
   if (!GM.on) return;
+  const tdt = realDt || dt; // level timer follows real time even when frames are slow (animation dt is capped)
   GM.t += dt; const L = GM.L, S = GM.S;
   const playing = GM.status === 'play';
   if (playing && GM.started && L.tm) {
-    if (GM.freeze > 0) GM.freeze -= dt; else GM.elapsed += dt;
+    if (GM.freeze > 0) GM.freeze -= tdt; else GM.elapsed += tdt;
     if (timeLeft() <= 0 && !GM.endT) endLevel('time');
   }
   if (playing) { GM.idle += dt; if (!GM.drag && GM.idle > (GM.id <= 3 ? 1.2 : 8) && (GM.id <= 6 || GM.id === 'daily' && false) && !GM.hand) startHand(); }
-  // drag stepping
+  // drag stepping: strictly one grid cell at a time, only into legal cells (see dragStep)
   const d = GM.drag;
-  if (d && d.tgt && (d.tgt[0] !== d.cur[0] || d.tgt[1] !== d.cur[1])) {
+  if (d) {
     const v = GM.vis[d.i];
-    if (Math.abs(v.x - d.cur[0]) + Math.abs(v.y - d.cur[1]) < .45) {
-      const nx = nextStep(d, d.cur, d.tgt); if (nx) { d.cur = nx; d.path.push(nx); sfx('step'); if (checkDragExit(d)) { } }
+    for (let n = 0; n < 3; n++) { // a few steps per frame keeps up on slow devices
+      const off = Math.abs(v.x - d.cur[0]) + Math.abs(v.y - d.cur[1]); if (off > .5) break;
+      const nx = dragStep(d); if (!nx) break;
+      // turning a corner: wait until the visual has fully arrived so it never clips the corner cell
+      const lp = d.path.length > 1 ? d.path[d.path.length - 2] : null, sameAxis = lp && ((lp[0] !== d.cur[0]) === (nx[0] !== d.cur[0]));
+      if (!sameAxis && off > .06) break;
+      if ((nx[0] !== d.cur[0] ? Math.abs(v.y - d.cur[1]) : Math.abs(v.x - d.cur[0])) > .06) break; // never step while leaning sideways
+      d.cur = nx; d.path.push(nx); sfx('step');
+      if (checkDragExit(d)) break;
+      if (n === 0 && dt < .03) break;
     }
   }
   for (let i = 0; i < GM.vis.length; i++) {
     const v = GM.vis[i]; if (v.born > 0) { v.born -= dt; if (v.born <= 0) { v.sc = -.4; v.sv = 0; } continue; }
     v.flash = Math.max(0, v.flash - dt * 3); v.shake = Math.max(0, v.shake - dt * 1.6); v.blink += dt * (0.8 + (i % 3) * .2); if (v.iceFade > 0) v.iceFade -= dt * 2.5;
     if (v.rotA) { v.rotA *= Math.pow(.0005, dt); if (Math.abs(v.rotA) < .01) v.rotA = 0; }
-    // scale spring
     v.sv += (-v.sc * 420 - v.sv * 18) * dt; v.sc += v.sv * dt; if (v.sq) { v.sq *= Math.pow(.004, dt); if (v.sq < .01) v.sq = 0; }
+    // queued waypoints: the visual walks the same axis-aligned cell path the logic used (never cuts corners)
+    if (v.q && v.q.length) {
+      let budget = (v.exit ? 30 : 22) * dt;
+      while (budget > 0 && v.q.length) {
+        const w = v.q[0], dx = w[0] - v.x, dy = w[1] - v.y, l = Math.abs(dx) + Math.abs(dy);
+        if (l <= budget + 1e-5) { v.x = w[0]; v.y = w[1]; budget -= l; v.q.shift(); }
+        else { // remove the small cross-axis residue first, then travel along the main axis (stays axis-aligned)
+          const xf = Math.abs(dx) <= Math.abs(dy);
+          const stepX = () => { if (Math.abs(dx) > 1e-6 && budget > 0) { const m = Math.min(budget, Math.abs(dx)); v.x += Math.sign(dx) * m; budget -= m; } };
+          const stepY = () => { if (Math.abs(dy) > 1e-6 && budget > 0) { const m = Math.min(budget, Math.abs(dy)); v.y += Math.sign(dy) * m; budget -= m; } };
+          const b0 = budget; if (xf) { stepX(); stepY(); } else { stepY(); stepX(); }
+          if (budget === b0) { v.x = w[0]; v.y = w[1]; v.q.shift(); } // safety: never spin without progress
+        }
+      }
+      v.vx = v.vy = 0; v.lift = Math.max(0, v.lift - dt * 6);
+      if (v.exit && v.q.length) continue;
+    }
     if (v.exit) {
       v.exit.t += dt; const e = v.exit, k = Math.min(1, e.t / .5), dist = e.dist * easeIn(k) + e.t * 1.5;
       v.x = e.x0 + e.dir[0] * dist; v.y = e.y0 + e.dir[1] * dist; v.alpha = 1 - Math.max(0, (k - .7) / .3); v.lift = Math.max(0, v.lift - dt * 4);
-      if (k >= 1) v.exit = null; continue;
+      if (k >= 1) { v.exit = null; v.alpha = 0; } continue;
     }
     if (!S.al[i]) continue;
     const dragging = d && d.i === i;
-    let tx = dragging ? d.cur[0] : S.x[i], ty = dragging ? d.cur[1] : S.y[i];
     if (dragging) {
-      // rubber band towards finger when blocked
-      if (d.tgt && d.tgt[0] === d.cur[0] && d.tgt[1] === d.cur[1]) { const ox = d.fx - d.cur[0], oy = d.fy - d.cur[1], l = Math.hypot(ox, oy), m = Math.min(.2, l * .25); if (l > 0.01) { tx += ox / l * m; ty += oy / l * m; } }
-      const k = 1 - Math.exp(-dt * 30), ox = v.x, oy = v.y; v.x += (tx - v.x) * k; v.y += (ty - v.y) * k;
-      // minimum glide speed
-      const rx = tx - v.x, ry = ty - v.y, rl = Math.hypot(rx, ry), mv = 9 * dt; if (rl > mv && rl < 3) { v.x += rx / rl * mv * .5; v.y += ry / rl * mv * .5; }
-      v.vx = (v.x - ox) / dt; v.vy = (v.y - oy) / dt; v.lift = Math.min(1, v.lift + dt * 9);
-    } else {
-      v.vx += ((tx - v.x) * 380 - v.vx * 26) * dt; v.vy += ((ty - v.y) * 380 - v.vy * 26) * dt; v.x += v.vx * dt; v.y += v.vy * dt;
-      if (Math.abs(tx - v.x) < .002 && Math.abs(v.vx) < .02) { v.x = tx; v.vx = 0; } if (Math.abs(ty - v.y) < .002 && Math.abs(v.vy) < .02) { v.y = ty; v.vy = 0; }
+      let tx = d.cur[0], ty = d.cur[1];
+      // small rubber-band nudge toward the finger along the blocked axis only (visual feedback, max 0.1 cell)
+      const ox0 = d.fx - d.cur[0], oy0 = d.fy - d.cur[1];
+      // only lean toward a cell the block can actually enter, so it never visually pokes into a neighbour/wall
+      if (Math.abs(ox0) >= Math.abs(oy0)) { if (Math.abs(ox0) > .01 && d.set.has((d.cur[0] + Math.sign(ox0)) + ',' + d.cur[1])) tx += clamp(ox0 * .2, -.1, .1); }
+      else if (Math.abs(oy0) > .01 && d.set.has(d.cur[0] + ',' + (d.cur[1] + Math.sign(oy0)))) ty += clamp(oy0 * .2, -.1, .1);
+      const k = 1 - Math.exp(-dt * 28), px = v.x, py = v.y;
+      // chase along one axis at a time (cur is always adjacent, so this never cuts through a corner)
+      const ex = tx - v.x, ey = ty - v.y;
+      if (Math.abs(ex) > .02 && Math.abs(ey) > .02) { if (Math.abs(ex) < Math.abs(ey)) v.x += ex * k; else v.y += ey * k; } // clear the small cross-axis residue first
+      else { v.x += ex * k; v.y += ey * k; }
+      const mv = 7 * dt, rx = tx - v.x, ry = ty - v.y; if (Math.abs(rx) > mv && Math.abs(ry) < .02) v.x += Math.sign(rx) * mv * .5; if (Math.abs(ry) > mv && Math.abs(rx) < .02) v.y += Math.sign(ry) * mv * .5;
+      v.vx = (v.x - px) / dt; v.vy = (v.y - py) / dt; v.lift = Math.min(1, v.lift + dt * 9);
+    } else if (!(v.q && v.q.length)) {
+      // critically damped settle (no overshoot into neighbours)
+      const tx = S.x[i], ty = S.y[i];
+      // if off on both axes, settle the smaller offset first so the block never travels diagonally
+      const ox = Math.abs(tx - v.x), oy = Math.abs(ty - v.y), holdX = ox > .03 && oy > .03 && ox >= oy, holdY = ox > .03 && oy > .03 && oy > ox;
+      if (holdX) v.vx = 0; else v.vx += ((tx - v.x) * 400 - v.vx * 40) * dt;
+      if (holdY) v.vy = 0; else v.vy += ((ty - v.y) * 400 - v.vy * 40) * dt;
+      v.x += v.vx * dt; v.y += v.vy * dt;
+      if (Math.abs(tx - v.x) < .003 && Math.abs(v.vx) < .05) { v.x = tx; v.vx = 0; } if (Math.abs(ty - v.y) < .003 && Math.abs(v.vy) < .05) { v.y = ty; v.vy = 0; }
       v.lift = Math.max(0, v.lift - dt * 6);
     }
   }
@@ -1317,34 +1355,44 @@ function blockAt(px, py) {
 }
 function onDown(e) {
   if (!GM.on || GM.status !== 'play' || GM.endT) return;
+  if (GM.drag) return; // only one finger drives a block at a time; extra touches are ignored
   auInit(); const [px, py] = evXY(e); const i = blockAt(px, py); GM.idle = 0; if (GM.hand && !GM.hand.sticky) GM.hand = null;
   if (GM.sel) { if (i >= 0) applyTargetBooster(GM.sel, i); return; }
   if (i < 0) return;
-  const L = GM.L, S = GM.S;
-  if (iceLeft(L, S, i)) { GM.vis[i].shake = .5; sfx('deny'); vibe(30); toast(`Frozen! Clear ${iceLeft(L, S, i)} more block${iceLeft(L, S, i) > 1 ? 's' : ''} to thaw`); return; }
-  if (isLocked(L, S, i)) { GM.vis[i].shake = .5; sfx('deny'); vibe(30); toast('Locked — clear the block with the key'); return; }
+  const L = GM.L, S = GM.S, v = GM.vis[i];
+  if (v.exit || v.born > 0) return;
+  if (iceLeft(L, S, i)) { v.shake = .5; sfx('deny'); vibe(30); toast(`Frozen! Clear ${iceLeft(L, S, i)} more block${iceLeft(L, S, i) > 1 ? 's' : ''} to thaw`); return; }
+  if (isLocked(L, S, i)) { v.shake = .5; sfx('deny'); vibe(30); toast('Locked — clear the block with the key'); return; }
+  // legal positions = BFS over single-cell translations from the start (respects walls, blocks, one-way axis)
   const occ = buildOcc(L, S), R = reach(L, S, occ, i), set = new Set(R.list.map(p => p[0] + ',' + p[1]));
-  GM.drag = { i, sx: px, sy: py, ox: S.x[i], oy: S.y[i], cur: [S.x[i], S.y[i]], tgt: [S.x[i], S.y[i]], fx: S.x[i], fy: S.y[i], list: R.list, set, path: [[S.x[i], S.y[i]]], t0: performance.now(), moved: 0, occ, pid: e.pointerId };
-  GM.vis[i].sc = .0; GM.vis[i].sv = 2.5; sfx('pick'); vibe(8);
+  // snap the visual onto the logical cell path so a fresh drag never starts mid-animation
+  v.q = []; v.x = S.x[i]; v.y = S.y[i]; v.vx = v.vy = 0;
+  // finish any other block still walking its previous path, so the new drag can't slide into a cell it is visually crossing
+  for (let j = 0; j < GM.vis.length; j++) { const w = GM.vis[j]; if (j === i || !w.q || !w.q.length) continue; const e = w.q[w.q.length - 1]; w.q = []; if (!w.exit) { w.x = S.al[j] ? S.x[j] : e[0]; w.y = S.al[j] ? S.y[j] : e[1]; } else { w.x = e[0]; w.y = e[1]; } w.vx = w.vy = 0; }
+  GM.drag = { i, sx: px, sy: py, ox: S.x[i], oy: S.y[i], cur: [S.x[i], S.y[i]], fx: S.x[i], fy: S.y[i], set, path: [[S.x[i], S.y[i]]], t0: performance.now(), moved: 0, occ, pid: e.pointerId, sm: S.m, gen: GM.gen };
+  v.sc = 0; v.sv = 2.5; sfx('pick'); vibe(8);
   try { cv.setPointerCapture(e.pointerId); } catch (er) { }
 }
 function onMove(e) {
   const d = GM.drag; if (!d || e.pointerId !== d.pid) return;
-  const [px, py] = evXY(e), cs = B_BOARD.cs;
-  const B = GM.L.blocks[d.i];
+  const [px, py] = evXY(e), cs = B_BOARD.cs, B = GM.L.blocks[d.i];
   let ddx = (px - d.sx) / cs, ddy = (py - d.sy) / cs; if (B.ax === 'h') ddy = 0; if (B.ax === 'v') ddx = 0;
   d.fx = d.ox + ddx; d.fy = d.oy + ddy; d.moved = Math.max(d.moved, Math.hypot(ddx, ddy));
-  let best = null, bd = 1e9;
-  for (const p of d.list) { const dd = (p[0] - d.fx) ** 2 + (p[1] - d.fy) ** 2 + (Math.abs(p[0] - d.cur[0]) + Math.abs(p[1] - d.cur[1])) * .02; if (dd < bd) { bd = dd; best = p; } }
-  if (best && (best[0] !== d.tgt[0] || best[1] !== d.tgt[1])) d.tgt = best;
-  if (best && best[0] === d.cur[0] && best[1] === d.cur[1] && Math.hypot(d.fx - d.cur[0], d.fy - d.cur[1]) > .7 && !d.bumped) { d.bumped = 1; sfx('bump'); vibe(6); }
-  if (Math.hypot(d.fx - d.cur[0], d.fy - d.cur[1]) < .4) d.bumped = 0;
+  const bl = Math.hypot(d.fx - d.cur[0], d.fy - d.cur[1]);
+  if (bl > .8 && !dragStep(d) && !d.bumped) { d.bumped = 1; sfx('bump'); vibe(6); }
+  if (bl < .4) d.bumped = 0;
 }
-function nextStep(d, a, b) {
-  // BFS within reachable set from a to b; return first step
-  const k = p => p[0] + ',' + p[1], tk = k(b), prev = new Map([[k(a), null]]), q = [a];
-  for (let qi = 0; qi < q.length; qi++) { const p = q[qi]; if (k(p) === tk) break; for (const dd of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const n = [p[0] + dd[0], p[1] + dd[1]], nk = k(n); if (!d.set.has(nk) || prev.has(nk)) continue; prev.set(nk, p); q.push(n); } }
-  if (!prev.has(tk)) return null; let c = b; while (true) { const p = prev.get(k(c)); if (!p || k(p) === k(a)) return c; c = p; }
+// next single-cell step toward the finger: dominant axis first, then the other axis; each step must be a legal position
+function dragStep(d) {
+  const dx = d.fx - d.cur[0], dy = d.fy - d.cur[1], ax = [];
+  const H = [Math.sign(dx), 0, Math.abs(dx)], V = [0, Math.sign(dy), Math.abs(dy)];
+  if (Math.abs(dx) >= Math.abs(dy)) ax.push(H, V); else ax.push(V, H);
+  for (const a of ax) {
+    if (a[2] < .5) continue;
+    const nx = [d.cur[0] + a[0], d.cur[1] + a[1]];
+    if (d.set.has(nx[0] + ',' + nx[1])) return nx;
+  }
+  return null;
 }
 function checkDragExit(d) {
   const L = GM.L, S = GM.S; const g = eligible(L, S, d.occ, d.i, d.cur[0], d.cur[1]); if (g < 0) return false;
@@ -1354,23 +1402,49 @@ function onUp(e) {
   const d = GM.drag; if (!d || (e && e.pointerId !== d.pid)) return;
   const L = GM.L, B = L.blocks[d.i];
   if (B.rot && d.moved < .3 && performance.now() - d.t0 < 400 && d.cur[0] === d.ox && d.cur[1] === d.oy) { GM.drag = null; doRotate(d.i); return; }
+  if (e && e.type === 'pointercancel') { cancelDrag(); return; }
+  // finish a fast flick: keep stepping cell by cell toward where the finger was released
+  for (let n = 0; n < 40; n++) { const nx = dragStep(d); if (!nx) break; d.cur = nx; d.path.push(nx); if (checkDragExit(d)) return; }
   commitDrag(false);
+}
+function cancelDrag() {
+  const d = GM.drag; if (!d) return; GM.drag = null;
+  const v = GM.vis[d.i]; if (!v) return;
+  // walk back along the visited cells
+  v.q = pathBack(d, v); v.sq = .4;
+}
+// waypoints from wherever the visual currently is back along the visited cells to the start
+function pathBack(d, v) {
+  const P = d.path, dist = p => Math.abs(p[0] - v.x) + Math.abs(p[1] - v.y);
+  let k = 0; for (let j = 0; j < P.length; j++) if (dist(P[j]) < dist(P[k]) - 1e-6) k = j;
+  if (k > 0 && dist(P[k - 1]) + dist(P[k]) < 1.12) k--; // already between k-1 and k: keep heading home
+  return P.slice(0, k + 1).reverse();
 }
 function commitDrag(exiting) {
   const d = GM.drag; if (!d) return; GM.drag = null;
-  const S = GM.S, i = d.i, v = GM.vis[i];
-  if (d.cur[0] === d.ox && d.cur[1] === d.oy) { v.sq = .6; sfx('drop'); return; }
+  const S = GM.S, L = GM.L, i = d.i, v = GM.vis[i];
+  // anything that changed the board mid-drag (boosters, undo, restart) invalidates this drag
+  if (d.gen !== GM.gen || d.sm !== S.m || !S.al[i]) { if (S.al[i] && d.gen === GM.gen && S.x[i] === d.ox && S.y[i] === d.oy) v.q = pathBack(d, v); return; }
+  if (d.cur[0] === d.ox && d.cur[1] === d.oy) { v.q = pathBack(d, v); v.sq = .6; sfx('drop'); return; }
+  // final safety: the target must be reachable by BFS from the start in the *current* state
+  const occ = buildOcc(L, S), R = reach(L, S, occ, i);
+  if (!R.list.some(p => p[0] === d.cur[0] && p[1] === d.cur[1])) { dbgViol('commit: unreachable target', d); cancelDrag(); return; }
+  // queue the remaining visual waypoints (from the cell the visual is heading to)
+  const dist = p => Math.abs(p[0] - v.x) + Math.abs(p[1] - v.y);
+  let k = d.path.length - 1; for (let j = d.path.length - 1; j >= 0; j--) if (dist(d.path[j]) < dist(d.path[k]) - 1e-6) k = j;
+  if (k + 1 < d.path.length && dist(d.path[k]) + dist(d.path[k + 1]) < 1.12) k++; // already between k and k+1: keep going forward
+  v.q = d.path.slice(k);
   doMove({ i, x: d.cur[0], y: d.cur[1], r: S.r[i] }, d.path);
   if (!exiting) { v.sq = 1; sfx('drop'); vibe(10); }
 }
 function doRotate(i) {
   const L = GM.L, S = GM.S, occ = buildOcc(L, S), rt = rotateTarget(L, S, occ, i);
   if (!rt) { GM.vis[i].shake = .4; sfx('deny'); toast('No room to rotate'); return; }
-  const v = GM.vis[i]; v.rotA = -Math.PI / 2; v.x = rt.x; v.y = rt.y; v.vx = v.vy = 0; sfx('rotate'); vibe(10);
+  const v = GM.vis[i]; v.q = []; v.rotA = -Math.PI / 2; v.x = rt.x; v.y = rt.y; v.vx = v.vy = 0; sfx('rotate'); vibe(10);
   doMove(rt, null);
 }
 function doMove(mv, path) {
-  const L = GM.L; GM.hist.push({ S: cloneS(GM.S), stars: new Set(GM.stars) });
+  const L = GM.L; GM.gen++; GM.hist.push({ S: cloneS(GM.S), stars: new Set(GM.stars) });
   if (GM.hist.length > 60) GM.hist.shift();
   if (!GM.started) { GM.started = true; }
   const prevKeys = keysLeft(L, GM.S), prevEx = GM.S.ex;
@@ -1379,13 +1453,14 @@ function doMove(mv, path) {
   const B = L.blocks[mv.i], pts = path || [[mv.x, mv.y]];
   for (const p of pts) { const cells = cellsOf(B.k, mv.r); for (const c of cells) { const k = (p[1] + c[1]) * L.w + p[0] + c[0]; if (L.stars.includes(k) && !GM.stars.has(k)) pickStar(k); } }
   handleEvents(r.ev, prevKeys, prevEx);
+  checkInvariants('move');
   afterMove();
 }
 function pickStar(k) {
   GM.stars.add(k); const s = GM.starVis.find(q => q.i === k); if (s) s.got = .01;
   const [px, py] = cellXY(k % GM.L.w + .5, Math.floor(k / GM.L.w) + .5);
   burst(px, py, ['#ffd84a', '#fff3a0', '#ffb020'], 18, { kind: 'star', smin: 60, smax: 220, g: 200 }); sfx('star'); vibe(12);
-  floatText(px, py - 10, '+10', '#ffd84a', 26); SAVE.coins += 10; SAVE.stats.pickups++; updCoins();
+  if (!GM.starPaid.has(k)) { GM.starPaid.add(k); floatText(px, py - 10, '+10', '#ffd84a', 26); SAVE.coins += 10; SAVE.stats.pickups++; updCoins(); saveGame(); }
 }
 function handleEvents(ev, prevKeys, prevEx) {
   const L = GM.L, S = GM.S;
@@ -1404,7 +1479,8 @@ function handleEvents(ev, prevKeys, prevEx) {
     // exit
     const cells = cellsOf(B.k, S.r[e.i]), [ew, eh] = extent(cells);
     const x0 = GM.drag && GM.drag.i === e.i ? GM.drag.cur[0] : S.x[e.i], y0 = S.y[e.i];
-    v.exit = { t: 0, gi: e.g, dir, x0: v.x, y0: v.y, dist: (dir[0] ? ew : eh) + 1.4 }; v.alpha = 1;
+    v.exit = { t: 0, gi: e.g, dir, x0: S.x[e.i], y0: S.y[e.i], dist: (dir[0] ? ew : eh) + 1.4 }; v.alpha = 1;
+    if (!v.q || !v.q.length) { if (Math.abs(v.x - S.x[e.i]) + Math.abs(v.y - S.y[e.i]) > .01) v.q = [[S.x[e.i], S.y[e.i]]]; }
     GM.combo = (GM.t - GM.lastExit < 3.2) ? GM.combo + 1 : 1; GM.lastExit = GM.t; GM.bestCombo = Math.max(GM.bestCombo, GM.combo);
     sfx('exit', GM.combo - 1); vibe([18, 30, 12]); SAVE.stats.blocks++;
     setTimeout(() => { burst(gcx + dir[0] * 8, gcy + dir[1] * 8, [col, shade(col, .45), '#ffffff'], 30, { dir: Math.atan2(dir[1], dir[0]), spread: 1.1, smin: 120, smax: 420, g: 300 }); ring(gcx, gcy, col, B_BOARD.cs * 1.6); }, 180);
@@ -1434,8 +1510,8 @@ function afterMove() {
   if (L.mv && movesLeft() <= 0) endLevel('moves');
 }
 function endLevel(kind) {
-  if (GM.endKind) return; GM.endKind = kind; GM.status = 'end'; GM.drag = null; GM.sel = null; updBoostSel(); GM.hand = null;
-  if (kind === 'win') { GM.endT = 1.7; GM.winT = 0; hideTip(); setTimeout(() => { confetti(140); sfx('win'); vibe([30, 40, 30, 40, 60]); const cx = B_BOARD.bx + GM.L.w * B_BOARD.cs / 2, cy = B_BOARD.by + GM.L.h * B_BOARD.cs / 2; floatText(cx, cy, GM.id === 'daily' ? 'Daily Clear!' : 'Board Clear!', '#ffffff', 50, { stroke: '#ff4f92', life: 1.4, rise: 20 }); burst(cx, cy, PALETTE.map(p => p.b), 60, { kind: 'star', smin: 150, smax: 520, g: 250 }); }, 420); }
+  if (GM.endKind) return; GM.endKind = kind; GM.status = 'end'; if (GM.drag) cancelDrag(); GM.sel = null; updBoostSel(); GM.hand = null;
+  if (kind === 'win') { recordWin(); GM.endT = 1.7; GM.winT = 0; hideTip(); setTimeout(() => { confetti(140); sfx('win'); vibe([30, 40, 30, 40, 60]); const cx = B_BOARD.bx + GM.L.w * B_BOARD.cs / 2, cy = B_BOARD.by + GM.L.h * B_BOARD.cs / 2; floatText(cx, cy, GM.id === 'daily' ? 'Daily Clear!' : 'Board Clear!', '#ffffff', 50, { stroke: '#ff4f92', life: 1.4, rise: 20 }); burst(cx, cy, PALETTE.map(p => p.b), 60, { kind: 'star', smin: 150, smax: 520, g: 250 }); }, 420); }
   else if (kind === 'bomb') {
     const L = GM.L, S = GM.S; for (let i = 0; i < L.blocks.length; i++) if (S.al[i] && L.blocks[i].bomb) { const v = GM.vis[i], [cx, cy] = blockCenter(i, v.x, v.y); burst(cx, cy, ['#ff7a2f', '#ffd84a', '#3a3550', '#ffffff'], 60, { smin: 150, smax: 600 }); ring(cx, cy, '#ff7a2f', B_BOARD.cs * 3); v.alpha = 0; }
     FX.shake = 1; sfx('boom'); vibe([80, 40, 120]); GM.endT = 1.1;
@@ -1453,19 +1529,22 @@ function continueLevel(kind) {
 function useBooster(id) {
   if (!GM.on || GM.status !== 'play' || GM.endT) return;
   auInit(); const L = GM.L;
+  if (GM.drag) cancelDrag();
   if (id === 'freeze' && !L.tm) { toast('Freeze works on timed levels'); sfx('deny'); return; }
   if (id === 'undo' && !GM.hist.length) { toast('Nothing to undo yet'); sfx('deny'); return; }
   if (id === 'moves' && !L.mv && !L.tm) { toast('No limit on this level — relax!'); sfx('deny'); return; }
   if (!SAVE.boosters[id]) { openBuyBooster(id); return; }
   if (id === 'hammer' || id === 'vacuum') { GM.sel = GM.sel === id ? null : id; updBoostSel(); sfx('click'); return; }
   spendBooster(id);
-  if (id === 'undo') { const h = GM.hist.pop(); GM.S = h.S; GM.stars = h.stars; for (const s of GM.starVis) if (!GM.stars.has(s.i)) s.got = 0; for (let i = 0; i < GM.vis.length; i++) { const v = GM.vis[i]; if (GM.S.al[i] && (v.exit || v.alpha < 1)) { v.exit = null; v.alpha = 1; v.x = GM.S.x[i]; v.y = GM.S.y[i]; v.sc = -.5; v.sv = 0; } } GM.iceSeen = L.blocks.map((B, i) => iceLeft(L, GM.S, i)); sfx('undo'); updHUD(); }
+  if (id === 'undo') { GM.gen++; const h = GM.hist.pop(); GM.S = h.S; GM.stars = h.stars; for (const s of GM.starVis) if (!GM.stars.has(s.i)) s.got = 0; for (let i = 0; i < GM.vis.length; i++) { const v = GM.vis[i]; v.q = []; if (!GM.S.al[i]) continue; const moved = v.exit || v.alpha < 1 || v.x !== GM.S.x[i] || v.y !== GM.S.y[i]; v.exit = null; v.alpha = 1; v.x = GM.S.x[i]; v.y = GM.S.y[i]; v.vx = v.vy = 0; if (moved) { v.sc = -.35; v.sv = 0; } } checkInvariants('undo'); GM.iceSeen = L.blocks.map((B, i) => iceLeft(L, GM.S, i)); sfx('undo'); updHUD(); }
   else if (id === 'freeze') { GM.freeze = 12; sfx('freeze'); vibe(20); const r = $('limit').getBoundingClientRect(); burst(r.left + r.width / 2, r.top + r.height / 2, ['#ffffff', '#bdf1ff', '#5fd3ff'], 30, { kind: 'spark', g: 100 }); toast('Timer frozen for 12 s'); }
   else if (id === 'moves') { if (L.mv) GM.extraMoves += 5; else GM.extraTime += 15; sfx('coin'); const r = $('limit').getBoundingClientRect(); floatText(r.left + r.width / 2, r.bottom + 20, L.mv ? '+5 moves' : '+15 s', '#ffd84a', 28); updHUD(); }
 }
 function spendBooster(id) { SAVE.boosters[id]--; SAVE.stats.boosters++; GM.usedBoost++; saveGame(); renderBoosts(); }
 function applyTargetBooster(id, i) {
-  const L = GM.L, S = GM.S; GM.sel = null; updBoostSel();
+  if (GM.drag) cancelDrag();
+  const L = GM.L, S = GM.S; GM.sel = null; updBoostSel(); GM.gen++;
+  if (!S.al[i]) return;
   GM.hist.push({ S: cloneS(S), stars: new Set(GM.stars) });
   const prevKeys = keysLeft(L, S), S2 = cloneS(S), ev = [];
   if (id === 'hammer') {
@@ -1485,7 +1564,7 @@ function applyTargetBooster(id, i) {
   const ev2 = closure(L, S2); GM.S = S2; handleEvents(ev2, prevKeys, S.ex); if (!GM.started) GM.started = true;
   afterMoveNoCount();
 }
-function afterMoveNoCount() { updHUD(); if (aliveCount(GM.S) === 0) endLevel('win'); }
+function afterMoveNoCount() { checkInvariants('booster'); updHUD(); if (aliveCount(GM.S) === 0) endLevel('win'); }
 // ---------- hand hint ----------
 function startHand() {
   const L = GM.L, sol = solve(L, GM.S, 4000); if (!sol.ok || !sol.path.length) return;
@@ -1513,7 +1592,7 @@ function botMove(mv) {
   const S = GM.S; if (mv.r !== S.r[mv.i]) { doRotate(mv.i); return true; }
   // compute path for star pickups
   const occ = buildOcc(GM.L, S), R = reach(GM.L, S, occ, mv.i), w = GM.L.w; const path = []; let k = mv.y * w + mv.x; while (k >= 0 && k !== undefined) { path.push([k % w, Math.floor(k / w)]); k = R.prev.get(k); if (k === -1) break; }
-  doMove(mv, path.reverse()); return true;
+  path.reverse(); GM.vis[mv.i].q = path.slice(1); doMove(mv, path); return true;
 }
 
 const TIPS = { 1: 'Drag the block into the gate of the same color!', 2: 'Blocks can’t slide through each other — clear a path.', 3: 'A block must fit the gate’s width to leave.' };
@@ -1523,6 +1602,26 @@ function showTip() {
   t.style.top = (B_BOARD.by + GM.L.h * B_BOARD.cs + B_BOARD.fr + 22) + 'px';
 }
 function hideTip() { $('tip').classList.add('hidden'); }
+
+// ---------- debug invariants (enabled with ?debug or window.__bgDebug) ----------
+const DEBUG = { on: /[?&]debug/.test(location.search), viol: [] };
+function dbgViol(msg, extra) { if (!DEBUG.on && !window.__bgDebug) return; DEBUG.viol.push([GM.id, msg, JSON.stringify(extra || '')]); console.warn('[invariant]', GM.id, msg, extra || ''); }
+function checkInvariants(tag) {
+  if (!DEBUG.on && !window.__bgDebug) return true;
+  const L = GM.L, S = GM.S, occ = new Int16Array(L.w * L.h).fill(-1); let dead = 0, ok = true;
+  for (let i = 0; i < L.blocks.length; i++) {
+    if (!S.al[i]) { dead++; continue; }
+    if (!(S.r[i] >= 0 && S.r[i] < 4)) { dbgViol(tag + ': bad rotation', i); ok = false; }
+    for (const c of cellsOf(L.blocks[i].k, S.r[i])) {
+      const X = S.x[i] + c[0], Y = S.y[i] + c[1];
+      if (!Number.isInteger(X) || !Number.isInteger(Y) || X < 0 || Y < 0 || X >= L.w || Y >= L.h) { dbgViol(tag + ': block outside board', [i, X, Y]); ok = false; continue; }
+      const k = Y * L.w + X; if (L.wall[k]) { dbgViol(tag + ': block in wall', [i, X, Y]); ok = false; }
+      if (occ[k] >= 0) { dbgViol(tag + ': overlap', [i, occ[k], X, Y]); ok = false; } occ[k] = i;
+    }
+  }
+  if (dead !== S.ex) { dbgViol(tag + ': exit count mismatch', [dead, S.ex]); ok = false; }
+  return ok;
+}
 // ================= UI: screens, modals, map, shop, settings, loop =================
 let SCREEN = 'title';
 const ACH = [
@@ -1696,7 +1795,7 @@ function openBuyBooster(id) {
 }
 // ---------- pause ----------
 function pauseGame() {
-  if (!GM.on || GM.status !== 'play') return; GM.status = 'paused'; GM.drag = null;
+  if (!GM.on || GM.status !== 'play') return; GM.status = 'paused'; if (GM.drag) cancelDrag();
   const S = SAVE.settings;
   modal(`<div class="ribbon blue">Paused</div><div class="row" style="justify-content:center;gap:12px;margin:6px 0 16px"><button class="ibtn" data-a="snd" style="${S.sound ? '' : 'opacity:.45'}"><span data-i="sound"></span></button><button class="ibtn" data-a="mus" style="${S.music ? '' : 'opacity:.45'}"><span data-i="music"></span></button><button class="ibtn" data-a="vib" style="${S.vibe ? '' : 'opacity:.45'}"><span data-i="vibe"></span></button><button class="ibtn" data-a="how"><span data-i="help"></span></button></div><div class="btns"><button class="btn big" data-a="res"><span data-i="play"></span>Resume</button><div class="row"><button class="btn blue sm" data-a="rst"><span data-i="retry"></span>Restart</button><button class="btn soft sm" data-a="map"><span data-i="map"></span>Map</button></div></div><div class="credit" style="margin-top:12px">Game by Zaib</div>`,
     { dismiss: () => { GM.status = 'play'; }, on: { res: () => { closeModals(); GM.status = 'play'; }, rst: () => { closeModals(); startLevel(GM.id); }, map: () => { closeModals(); GM.id === 'daily' ? showTitle() : showMap(); }, how: () => showHow(() => { GM.status = 'play'; pauseGame(); }), snd: (b) => { S.sound = !S.sound; b.style.opacity = S.sound ? 1 : .45; saveGame(); auApply(); }, mus: (b) => { S.music = !S.music; b.style.opacity = S.music ? 1 : .45; saveGame(); auApply(); }, vib: (b) => { S.vibe = !S.vibe; b.style.opacity = S.vibe ? 1 : .45; saveGame(); vibe(20); } } });
@@ -1710,7 +1809,10 @@ function calcStars() {
   if (GM.continues) s = Math.min(s, 1); else if (GM.usedBoost) s = Math.max(1, s);
   return s;
 }
-function showWin() {
+// progress/coins are recorded the instant the board is cleared (not when the win panel appears),
+// so leaving during the celebration can never lose the win; guarded so it is paid exactly once.
+function recordWin() {
+  if (GM.winRes && GM.winRes.att === GM.att) return GM.winRes;
   const daily = GM.id === 'daily', stars = calcStars(); let coins;
   if (daily) {
     const t = todayStr(), first = SAVE.daily.last !== t;
@@ -1722,6 +1824,10 @@ function showWin() {
   }
   SAVE.coins += coins; saveGame();
   if (typeof gtag === 'function') try { gtag('event', 'level_complete', { level: String(GM.id), stars }); } catch (e) { }
+  return (GM.winRes = { att: GM.att, stars, coins });
+}
+function showWin() {
+  const daily = GM.id === 'daily', { stars, coins } = recordWin();
   const L = GM.L, stat1 = L.tm ? [Math.ceil(GM.elapsed) + 's', 'Time'] : [GM.S.m, 'Moves'];
   const nextLbl = daily ? 'Home' : GM.id >= N_LEVELS ? 'Map' : 'Next Level';
   const title = daily ? 'Daily Done!' : ['', 'Well Done!', 'Great Job!', 'Perfect!'][stars];
@@ -1859,10 +1965,10 @@ window.addEventListener('resize', () => { resize(); if (SCREEN === 'map') showMa
 let lastT = 0;
 function frame(ts) {
   requestAnimationFrame(frame);
-  const dt = Math.min(.05, (ts - lastT) / 1000 || .016); lastT = ts;
+  const raw = (ts - lastT) / 1000 || .016, dt = Math.min(.05, raw); lastT = ts;
   if (QUALITY.auto) { QUALITY.ft.push(dt); if (QUALITY.ft.length > 120) { const avg = QUALITY.ft.reduce((a, b) => a + b, 0) / QUALITY.ft.length; QUALITY.ft = []; if (avg > .024 && QUALITY.lvl > 0 && !document.hidden) { QUALITY.lvl--; resize(); } } }
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  if (SCREEN === 'game' && GM.on) { updateGame(dt); renderGame(dt); updLimit(); }
+  if (SCREEN === 'game' && GM.on) { updateGame(dt, Math.min(.25, raw)); renderGame(dt); updLimit(); }
   else { drawBG(dt, SCREEN === 'title' ? 2 : 1); updFX(dt); drawFX(); }
 }
 function init() {
@@ -1874,7 +1980,7 @@ function init() {
   document.body.addEventListener('pointerdown', () => auInit(), { once: true });
   showTitle(); requestAnimationFrame(frame);
 }
-window.__bg = { get GM() { return GM; }, get SAVE() { return SAVE; }, startLevel, playLevel, solve, botMove, applyMove, showMap, showTitle, showWin, showShop, showSettings, showHow, showAch, showGift, pauseGame, closeModals, LEVELS: () => LEVELS, ff: (sec) => { for (let t = 0; t < sec; t += 1 / 60) updateGame(1 / 60); }, playDaily, useBooster, applyTargetBooster };
+window.__bg = { get GM() { return GM; }, get SAVE() { return SAVE; }, startLevel, playLevel, solve, botMove, applyMove, showMap, showTitle, showWin, showShop, showSettings, showHow, showAch, showGift, pauseGame, closeModals, LEVELS: () => LEVELS, ff: (sec) => { for (let t = 0; t < sec; t += 1 / 60) updateGame(1 / 60); }, playDaily, useBooster, applyTargetBooster, DEBUG };
 if (document.fonts && document.fonts.load) { Promise.race([document.fonts.load('800 20px Baloo'), new Promise(r => setTimeout(r, 1200))]).then(init); } else init();
 
 </script>
