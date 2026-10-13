@@ -1,0 +1,42 @@
+{
+  "id": "/block-glide/",
+  "name": "Block Glide",
+  "short_name": "Block Glide",
+  "description": "Block Glide by Zaib \u2014 a cozy color block sliding puzzle. Drag soft clay blocks through matching color gates across 160 solver-checked levels with ice, locks, bombs, rotating blocks, daily challenges, boosters and skins.",
+  "lang": "en",
+  "start_url": "/block-glide/?source=pwa",
+  "scope": "/block-glide/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#b9a8ff",
+  "background_color": "#b9a8ff",
+  "categories": [
+    "games"
+  ],
+  "icons": [
+    {
+      "src": "/block-glide/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/block-glide/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/block-glide/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/block-glide/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
