@@ -2,7 +2,7 @@
   "id": "/block-glide/",
   "name": "Block Glide",
   "short_name": "Block Glide",
-  "description": "Block Glide by Zaib \u2014 a cozy color block sliding puzzle. Drag soft clay blocks through matching color gates across 160 solver-checked levels with ice, locks, bombs, rotating blocks, daily challenges, boosters and skins.",
+  "description": "Block Glide by Zaib \u2014 a cozy color block sliding puzzle. Drag soft clay blocks through matching color gates across 160 levels with ice, locks, bombs, rotating blocks, daily challenges, boosters and skins.",
   "lang": "en",
   "start_url": "/block-glide/?source=pwa",
   "scope": "/block-glide/",
